@@ -31,7 +31,7 @@ CHAT_LOG_PATH = "chat_log.csv"
 CHAT_HISTORY_PATH = "chat_history.csv"
 
 
-def save_conversation_meta(conversation_id, title):
+def save_conversation_meta(conversation_id, title, user_email):
     rows = []
     found = False
     if Path(CHAT_HISTORY_PATH).exists():
@@ -44,21 +44,22 @@ def save_conversation_meta(conversation_id, title):
     if not found:
         rows.append({
             "conversation_id": conversation_id,
+            "user_email": user_email,
             "title": title,
             "created_at": datetime.utcnow().isoformat()
         })
     with open(CHAT_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["conversation_id", "title", "created_at"])
+        writer = csv.DictWriter(f, fieldnames=["conversation_id", "user_email", "title", "created_at"])
         writer.writeheader()
         writer.writerows(rows)
 
 
-def load_all_conversations():
+def load_user_conversations(user_email):
     if not Path(CHAT_HISTORY_PATH).exists():
         return []
     with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        rows = list(reader)
+        rows = [r for r in reader if r.get("user_email", "") == user_email]
     rows.sort(key=lambda r: r["created_at"], reverse=True)
     return [(r["conversation_id"], r["title"]) for r in rows]
 
@@ -110,15 +111,16 @@ def load_data():
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-def log_message(session_id, role, content):
+def log_message(session_id, user_email, role, content):
     file_exists = Path(CHAT_LOG_PATH).exists()
     with open(CHAT_LOG_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["timestamp", "session_id", "role", "content"])
+            writer.writerow(["timestamp", "session_id", "user_email", "role", "content"])
         writer.writerow([
             datetime.utcnow().isoformat(),
             session_id,
+            user_email,
             role,
             content.replace("\n", " ")
         ])
@@ -501,10 +503,28 @@ def ask_ai(question, chat_history=None):
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
+def render_email_gate():
+    st.markdown("<h2 style='text-align: center;'>AngiLens</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Search how we query. Know how we think.</p>", unsafe_allow_html=True)
+    st.divider()
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.markdown("**Enter your Angi email to continue**")
+        email_input = st.text_input("", placeholder="firstname.lastname@angi.com", label_visibility="collapsed")
+        if st.button("Continue", use_container_width=True, type="primary"):
+            email = email_input.strip().lower()
+            if "@angi.com" not in email:
+                st.error("Please use your @angi.com email address.")
+            else:
+                st.session_state["user_email"] = email
+                st.rerun()
+
+
 def render_sidebar():
+    user_email = st.session_state.get("user_email", "")
     with st.sidebar:
         st.markdown("### AngiLens")
-        st.caption("*Search how we query. Know how we think.*")
+        st.caption(f"*{user_email}*")
         st.divider()
 
         if st.button("+ New Chat", use_container_width=True):
@@ -513,7 +533,7 @@ def render_sidebar():
             st.rerun()
 
         st.markdown("**Past conversations**")
-        conversations = load_all_conversations()
+        conversations = load_user_conversations(user_email)
         if not conversations:
             st.caption("No conversations yet.")
         else:
@@ -524,6 +544,12 @@ def render_sidebar():
                     st.session_state["conversation_id"] = conv_id
                     st.session_state["messages"] = load_conversation_messages(conv_id)
                     st.rerun()
+
+        st.divider()
+        if st.button("Sign out", use_container_width=True):
+            for key in ["user_email", "conversation_id", "messages"]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 
 # ── Main chat ─────────────────────────────────────────────────────────────────
@@ -564,15 +590,15 @@ def render_chat():
 
     if question:
         conv_id = st.session_state["conversation_id"]
+        user_email = st.session_state.get("user_email", "unknown")
         is_first_message = len(st.session_state["messages"]) == 0
 
         st.session_state["messages"].append({"role": "user", "content": question})
-        log_message(conv_id, "user", question)
+        log_message(conv_id, user_email, "user", question)
 
-        # save conversation title from first question
         if is_first_message:
             title = question[:60] + ("..." if len(question) > 60 else "")
-            save_conversation_meta(conv_id, title)
+            save_conversation_meta(conv_id, title, user_email)
 
         with st.chat_message("user"):
             st.markdown(question)
@@ -584,10 +610,13 @@ def render_chat():
             st.markdown(result)
 
         st.session_state["messages"].append({"role": "assistant", "content": result})
-        log_message(conv_id, "assistant", result)
+        log_message(conv_id, user_email, "assistant", result)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-render_sidebar()
-render_chat()
+if "user_email" not in st.session_state:
+    render_email_gate()
+else:
+    render_sidebar()
+    render_chat()
