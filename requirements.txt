@@ -1,0 +1,6 @@
+streamlit
+openai
+numpy
+pandas
+tiktoken
+scikit-learn
