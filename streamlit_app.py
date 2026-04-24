@@ -345,8 +345,7 @@ def ask_ai(question, chat_history=None):
     client = OpenAI(api_key=OPENAI_API_KEY)
     df, df_tables, user_tables, df_emb, matrix, col_df = load_data()
 
-    is_followup = len(chat_history) > 0 and len(question.split()) <= 8
-    intent = "general" if is_followup else classify_intent(question, client)
+    intent = classify_intent(question, client)
 
     # ── Expert finder ─────────────────────────────────────────────────────────
     if intent == "expert_finder":
