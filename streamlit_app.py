@@ -101,8 +101,6 @@ def load_conversation_messages(conversation_id):
 @st.cache_resource(show_spinner="Loading AngiLens...")
 def load_data():
     df = pd.read_csv("df_4_13.csv")
-    st.write(f"DEBUG: df has {len(df)} rows")
-
     df["START_TIME"] = pd.to_datetime(df["START_TIME"], format="mixed", utc=True, errors="coerce")
     df.columns = df.columns.str.upper()
 
