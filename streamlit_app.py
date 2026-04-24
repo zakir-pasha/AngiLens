@@ -64,7 +64,28 @@ def load_user_conversations(user_email):
     return [(r["conversation_id"], r["title"]) for r in rows]
 
 
-def load_conversation_messages(conversation_id):
+def delete_conversation(conversation_id, user_email):
+    """Remove a conversation from chat_history.csv and its messages from chat_log.csv."""
+    if Path(CHAT_HISTORY_PATH).exists():
+        with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = [r for r in reader if not (r["conversation_id"] == conversation_id and r.get("user_email") == user_email)]
+        with open(CHAT_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["conversation_id", "user_email", "title", "created_at"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    if Path(CHAT_LOG_PATH).exists():
+        with open(CHAT_LOG_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = [r for r in reader if r["session_id"] != conversation_id]
+        with open(CHAT_LOG_PATH, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["timestamp", "session_id", "user_email", "role", "content"])
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+
     if not Path(CHAT_LOG_PATH).exists():
         return []
     messages = []
@@ -539,11 +560,20 @@ def render_sidebar():
         else:
             current_id = st.session_state.get("conversation_id", "")
             for conv_id, title in conversations:
-                label = f"{'▶ ' if conv_id == current_id else ''}{title[:45]}{'...' if len(title) > 45 else ''}"
-                if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
-                    st.session_state["conversation_id"] = conv_id
-                    st.session_state["messages"] = load_conversation_messages(conv_id)
-                    st.rerun()
+                label = f"{'▶ ' if conv_id == current_id else ''}{title[:35]}{'...' if len(title) > 35 else ''}"
+                col_title, col_del = st.columns([5, 1])
+                with col_title:
+                    if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
+                        st.session_state["conversation_id"] = conv_id
+                        st.session_state["messages"] = load_conversation_messages(conv_id)
+                        st.rerun()
+                with col_del:
+                    if st.button("✕", key=f"del_{conv_id}"):
+                        delete_conversation(conv_id, user_email)
+                        if st.session_state.get("conversation_id") == conv_id:
+                            st.session_state["conversation_id"] = str(uuid.uuid4())
+                            st.session_state["messages"] = []
+                        st.rerun()
 
         st.divider()
         if st.button("Sign out", use_container_width=True):
