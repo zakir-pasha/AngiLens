@@ -18,25 +18,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  /* Main background — light mint */
-  .stApp { background-color: #D8F5E8; }
-  .main .block-container { background-color: #D8F5E8; padding-top: 1rem; max-width: 860px; }
-
-  /* Sidebar — coral */
-  section[data-testid="stSidebar"] { background-color: #F26552 !important; }
-  section[data-testid="stSidebar"] * { color: #ffffff !important; }
-  section[data-testid="stSidebar"] .stButton > button {
-    background-color: rgba(255,255,255,0.2) !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(255,255,255,0.4) !important;
-  }
-  section[data-testid="stSidebar"] .stButton > button:hover {
-    background-color: rgba(255,255,255,0.35) !important;
-  }
-
-  /* Chat messages on mint bg */
-  .stChatMessage { background-color: #ffffff; border-radius: 8px; }
-
+  section[data-testid="stSidebar"] { background: #1a1a2e; }
+  section[data-testid="stSidebar"] * { color: #e0e0e0 !important; }
+  .main .block-container { padding-top: 1rem; max-width: 860px; }
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
 </style>
