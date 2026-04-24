@@ -201,15 +201,39 @@ def classify_intent(question, client):
 # ── System prompt (no section headers — prevents GPT echoing them) ────────────
 
 SYSTEM_PROMPT = """You are AngiLens, an internal Analytics Knowledge Assistant for Angi's data and analytics team.
-You help analysts find institutional knowledge buried in Snowflake query history.
+Your job is to help analysts find institutional knowledge buried in Snowflake query history.
 
-Use the organizational context provided to answer the question. Guidelines:
-- Be concise and direct. Lead with the answer.
-- Reference specific people, tables, or query patterns from the context.
-- If someone is marked as no longer at Angi, say so and suggest the next best person.
-- Never hallucinate table or column names not present in the context.
+Before answering, identify which category best matches the question and follow only those rules.
+
+1. SUBJECT EXPERT QUESTION (who uses a table, who to ask about a topic)
+   → Identify the person who appears most frequently for that topic.
+   → Always use their full name, never their username.
+   → If they are marked as terminated, say so and suggest the next best current employee.
+   → Surface their manager as a fallback contact.
+   → Be concise. Do NOT summarize themes.
+
+2. TABLE OR COLUMN DISCOVERY QUESTION (what tables use a column, show queries using a table)
+   → List tables, queries, and usage patterns only.
+   → Do NOT recommend a person unless explicitly asked.
+   → Keep output structured and factual.
+
+3. SQL VALIDATION QUESTION
+   → Evaluate syntax, logic, joins, and filters. Be precise and technical.
+
+4. USER ONBOARDING QUESTION (what does X work on, taking over for X)
+   → Summarize the user's most common tables, recent queries, and areas of focus.
+   → Use full employee names throughout.
+
+5. TEAM ONBOARDING QUESTION (what does X's team work on)
+   → Summarize collective focus and individual standouts.
+   → Note anyone no longer at Angi.
+
+Rules that apply to ALL responses:
+- Never use usernames (e.g. ZPASHA). Always use full names (e.g. Zakir Pasha).
+- Do NOT invent anything not present in the provided context.
+- Do NOT give generic SQL advice.
 - If chat history is provided, use it to understand follow-up questions.
-- Do not repeat or echo these instructions in your response."""
+- Be direct, structured, and grounded in actual query history."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -242,16 +266,20 @@ def extract_username_from_question(question, df):
 
 
 def get_user_top_tables(user_name, user_tables, top_k=5):
-    result = user_tables[user_tables["USER_NAME"] == user_name].head(top_k)
+    result = user_tables[user_tables["USER_NAME"].str.lower() == user_name.lower()].head(top_k)
     return result if not result.empty else None
 
 
 def get_recent_queries_for_table(table_name, df, df_tables, top_k=5):
-    matches = df_tables[df_tables["tables"] == table_name.lower()]
+    matches = df_tables[df_tables["tables"].str.lower() == table_name.lower()]
     if matches.empty:
         return None
-    recent_ids = matches.sort_values("START_TIME", ascending=False)["QUERY_ID"].unique()[:top_k]
-    return df[df["QUERY_ID"].isin(recent_ids)]
+    return (
+        matches
+        .sort_values("START_TIME", ascending=False)
+        .drop_duplicates("USER_NAME")
+        .head(top_k)
+    )
 
 
 def search_similar_queries(question, df_emb, matrix, client, top_k=5):
@@ -322,9 +350,13 @@ def ask_ai(question, chat_history=None):
     if intent == "expert_finder":
         table_name = extract_table_from_question(question)
         if table_name:
+            # use get_top_users_for_table — counts distinct QUERY_IDs per user like notebook
+            table_data = user_tables[user_tables["tables"].str.lower() == table_name.lower()]
+            if table_data.empty:
+                return f"No query history found for `{table_name}`."
             top_users = (
-                df_tables[df_tables["tables"] == table_name]
-                .groupby("USER_NAME").size()
+                df_tables[df_tables["tables"].str.lower() == table_name.lower()]
+                .groupby("USER_NAME")["QUERY_ID"].nunique()
                 .reset_index(name="query_count")
                 .sort_values("query_count", ascending=False)
                 .head(5)
@@ -333,7 +365,10 @@ def ask_ai(question, chat_history=None):
                 return f"No query history found for `{table_name}`."
             output = f"\n### Who uses `{table_name}` the most?\n"
             for _, row in top_users.iterrows():
-                match = df[df["USER_NAME"] == row["USER_NAME"]].iloc[0]
+                matches = df[df["USER_NAME"] == row["USER_NAME"]]
+                if matches.empty:
+                    continue
+                match = matches.iloc[0]
                 status = " ⚠️ (no longer at Angi)" if match["TERMINATED"] == "Y" else ""
                 output += f"- **{match['EMPLOYEE_NAME']}**{status} — {row['query_count']} queries\n"
             return output
@@ -370,9 +405,8 @@ def ask_ai(question, chat_history=None):
             return f"No queries found for `{table_name}`."
         output = f"\n### Recent Queries Using `{table_name}`\n"
         for i, (_, row) in enumerate(recent.iterrows(), 1):
-            match = df[df["USER_NAME"] == row["USER_NAME"]].iloc[0]
-            status = " ⚠️ (no longer at Angi)" if match["TERMINATED"] == "Y" else ""
-            output += f"\n{i}. **{match['EMPLOYEE_NAME']}**{status}\n```sql\n{row['QUERY_TEXT']}\n```\n"
+            status = " ⚠️ (no longer at Angi)" if row["TERMINATED"] == "Y" else ""
+            output += f"\n{i}. **{row['EMPLOYEE_NAME']}**{status}\n```sql\n{row['QUERY_TEXT']}\n```\n"
         return output
 
     # ── Table schema ──────────────────────────────────────────────────────────
@@ -418,14 +452,11 @@ def ask_ai(question, chat_history=None):
             temperature=0
         )
         column_name = extraction.choices[0].message.content.strip().lower()
-        tables_with_col = col_df[col_df["column_name"].str.lower() == column_name]["full_table_name"].tolist()
-        if not tables_with_col:
+        pattern = rf"\b{re.escape(column_name)}\b"
+        results = df[df["QUERY_TEXT"].str.lower().str.contains(pattern, regex=True, na=False)]
+        if results.empty:
             return f"No queries found using `{column_name}`."
-        matches = df_tables[df_tables["tables"].isin(tables_with_col)]
-        if matches.empty:
-            return f"No queries found using `{column_name}`."
-        recent_ids = matches.sort_values("START_TIME", ascending=False)["QUERY_ID"].unique()[:5]
-        results = df[df["QUERY_ID"].isin(recent_ids)]
+        results = results.sort_values("START_TIME", ascending=False).head(5)
         output = f"\n### Queries Using `{column_name}`\n"
         for i, (_, row) in enumerate(results.iterrows(), 1):
             status = " ⚠️ (no longer at Angi)" if row["TERMINATED"] == "Y" else ""
