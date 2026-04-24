@@ -11,7 +11,7 @@ from openai import OpenAI
 
 st.set_page_config(
     page_title="AngiLens",
-    page_icon="🔍",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -28,6 +28,51 @@ st.markdown("""
 
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 CHAT_LOG_PATH = "chat_log.csv"
+CHAT_HISTORY_PATH = "chat_history.csv"
+
+
+def save_conversation_meta(conversation_id, title):
+    rows = []
+    found = False
+    if Path(CHAT_HISTORY_PATH).exists():
+        with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["conversation_id"] == conversation_id:
+                    found = True
+                rows.append(row)
+    if not found:
+        rows.append({
+            "conversation_id": conversation_id,
+            "title": title,
+            "created_at": datetime.utcnow().isoformat()
+        })
+    with open(CHAT_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["conversation_id", "title", "created_at"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def load_all_conversations():
+    if not Path(CHAT_HISTORY_PATH).exists():
+        return []
+    with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return [(r["conversation_id"], r["title"]) for r in rows]
+
+
+def load_conversation_messages(conversation_id):
+    if not Path(CHAT_LOG_PATH).exists():
+        return []
+    messages = []
+    with open(CHAT_LOG_PATH, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["session_id"] == conversation_id:
+                messages.append({"role": row["role"], "content": row["content"]})
+    return messages
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -452,7 +497,7 @@ def ask_ai(question, chat_history=None):
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown("### 🔍 AngiLens")
+        st.markdown("### AngiLens")
         st.caption("*Search how we query. Know how we think.*")
         st.divider()
 
@@ -461,14 +506,18 @@ def render_sidebar():
             st.session_state["messages"] = []
             st.rerun()
 
-        st.markdown("**This session**")
-        messages = st.session_state.get("messages", [])
-        user_messages = [m for m in messages if m["role"] == "user"]
-        if not user_messages:
-            st.caption("No messages yet.")
+        st.markdown("**Past conversations**")
+        conversations = load_all_conversations()
+        if not conversations:
+            st.caption("No conversations yet.")
         else:
-            for msg in user_messages:
-                st.caption(f"› {msg['content'][:50]}{'...' if len(msg['content']) > 50 else ''}")
+            current_id = st.session_state.get("conversation_id", "")
+            for conv_id, title in conversations:
+                label = f"{'▶ ' if conv_id == current_id else ''}{title[:45]}{'...' if len(title) > 45 else ''}"
+                if st.button(label, key=f"conv_{conv_id}", use_container_width=True):
+                    st.session_state["conversation_id"] = conv_id
+                    st.session_state["messages"] = load_conversation_messages(conv_id)
+                    st.rerun()
 
 
 # ── Main chat ─────────────────────────────────────────────────────────────────
@@ -479,8 +528,8 @@ def render_chat():
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
 
-    st.markdown("## 🔍 AngiLens")
-    st.caption("Search how we query. Know how we think.")
+    st.markdown("<h2 style='text-align: center;'>AngiLens</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Search how we query. Know how we think.</p>", unsafe_allow_html=True)
 
     if not st.session_state["messages"]:
         st.divider()
@@ -509,8 +558,15 @@ def render_chat():
 
     if question:
         conv_id = st.session_state["conversation_id"]
+        is_first_message = len(st.session_state["messages"]) == 0
+
         st.session_state["messages"].append({"role": "user", "content": question})
         log_message(conv_id, "user", question)
+
+        # save conversation title from first question
+        if is_first_message:
+            title = question[:60] + ("..." if len(question) > 60 else "")
+            save_conversation_meta(conv_id, title)
 
         with st.chat_message("user"):
             st.markdown(question)
