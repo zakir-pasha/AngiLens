@@ -157,8 +157,8 @@ Intents and rules:
 - sql_check: user pastes a SQL query and asks if it looks right or asks for a review
   Examples: "does this query look right: select * from ...", "can you review this SQL"
 
-- general: anything else, follow-up questions, or vague questions
-  Examples: "tell me more", "who else", "what about the second person"
+- general: anything else, follow-up questions, vague questions, or general onboarding questions not about a specific person
+  Examples: "tell me more", "who else", "what about the second person", "I'm new to Angi which tables should I learn", "where do I start as a new analyst", "what are the most important tables"
 
 Reply with ONLY the intent label, nothing else. No explanation."""
 
@@ -203,11 +203,17 @@ def extract_table_from_question(question):
     return matches[0] if matches else None
 
 
+PERSON_BLOCKLIST = {"angi", "team", "data", "analytics", "table", "tables", "query",
+                    "queries", "learn", "first", "work", "new", "help", "what", "which",
+                    "should", "need", "know", "about", "with", "from", "have", "does"}
+
 def extract_username_from_question(question, df):
     q_lower = question.lower()
     for _, row in df[["USER_NAME", "EMPLOYEE_NAME"]].drop_duplicates().iterrows():
         name_parts = str(row["EMPLOYEE_NAME"]).lower().split()
-        if any(part in q_lower for part in name_parts if len(part) > 3):
+        # only match if a name part appears AND it's not a generic/company word
+        if any(part in q_lower and part not in PERSON_BLOCKLIST
+               for part in name_parts if len(part) > 3):
             return row["USER_NAME"]
     return None
 
