@@ -29,6 +29,8 @@ st.markdown("""
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 CHAT_LOG_PATH = "chat_log.csv"
 
+# ── Data loading ──────────────────────────────────────────────────────────────
+
 @st.cache_resource(show_spinner="Loading AngiLens...")
 def load_data():
     df = pd.read_csv("df_4_13.csv")
@@ -61,6 +63,8 @@ def load_data():
     return df, df_tables, user_tables, df_emb, matrix, col_df
 
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+
 def log_message(session_id, role, content):
     file_exists = Path(CHAT_LOG_PATH).exists()
     with open(CHAT_LOG_PATH, "a", newline="", encoding="utf-8") as f:
@@ -75,58 +79,77 @@ def log_message(session_id, role, content):
         ])
 
 
-SYSTEM_PROMPT = """
-You are AngiLens, an internal Analytics Knowledge Assistant for Angi's data and analytics team.
-Your job is to help analysts find institutional knowledge buried in Snowflake query history.
+# ── Intent classification ─────────────────────────────────────────────────────
 
-Before answering, identify which category best matches the question and follow only those rules.
+INTENT_PROMPT = """You are a question classifier for an internal analytics tool. Classify the question into exactly one intent.
 
-1. SUBJECT EXPERT QUESTION
-   → Identify the person who appears most frequently for that topic.
-   → Lead with their name. Mention 1-2 tables showing their expertise.
-   → If no longer at Angi, say so and suggest the next best person.
-   → 3-4 sentences max.
+Intents and rules:
 
-2. USER ONBOARDING
-   → Summarize their top focus areas based on most-used tables.
-   → Group by domain. Mention their manager. Flag if terminated.
-   → 5-6 sentences.
+- table_schema: user asks what columns are in a specific table, or what fields a table has
+  Examples: "what columns are in rpt.reports.f_sp", "what fields does f_lead have", "show me the schema for rpt.reports.d_sp"
 
-3. TEAM ONBOARDING
-   → Summarize collective focus and individual standouts.
-   → Do NOT list tables. 3-5 sentences.
+- column_lookup: user asks which tables contain a specific column name
+  Examples: "which tables have contactid", "what tables have sp_id in them", "where is lead_id used"
 
-4. SQL CHECK
-   → Identify issues: missing filters, bad joins, wrong aggregation.
-   → Suggest a fix.
+- column_usage: user asks how a column is used or what queries use a column
+  Examples: "show me queries that use contactid", "how do people use sp_id"
 
-5. GENERAL / SEMANTIC
-   → Answer conversationally using context provided.
-   → Use chat history to understand follow-up questions.
+- co_occurrence: user asks what columns are commonly used WITH a specific table, or what the common breakouts/dimensions/measures are for a table
+  Examples: "what columns do people usually use with f_lead", "what are the common breakouts for f_sp", "what dimensions are used with f_sr", "how do people typically query f_lead"
 
-Always be concise. Never hallucinate table or column names.
-"""
+- table_queries: user asks to see example queries for a specific table
+  Examples: "show me queries using f_sp", "what do queries on f_lead look like"
 
+- expert_finder: user asks who to ask about a topic, who knows about something, or who uses a table the most
+  Examples: "who should I ask about autodialer", "who uses f_lead the most", "who knows about SPP migration"
 
-def cosine_similarity(vec, matrix):
-    vec = vec / (np.linalg.norm(vec) + 1e-10)
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
-    return (matrix / norms) @ vec
+- user_onboarding: user asks what a specific named person works on, or says they are taking over someone's work
+  Examples: "what does Zakir Pasha work on", "I'm taking over for Nick Cushing", "tell me about Aaron Belowich's work"
+
+- team_onboarding: user asks what a manager's team works on, or asks about a team generally
+  Examples: "what does Patrick McCormack's team work on", "what is Makia's team focused on"
+
+- sql_check: user pastes a SQL query and asks if it looks right or asks for a review
+  Examples: "does this query look right: select * from ...", "can you review this SQL"
+
+- general: anything else, follow-up questions, or vague questions
+  Examples: "tell me more", "who else", "what about the second person"
+
+Reply with ONLY the intent label, nothing else. No explanation."""
 
 
 def classify_intent(question, client):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": """Classify into one of:
-expert_finder, user_onboarding, team_onboarding, table_schema,
-column_lookup, column_usage, table_queries, sql_check, general
-Reply with ONLY the label."""},
+            {"role": "system", "content": INTENT_PROMPT},
             {"role": "user", "content": question}
         ],
         temperature=0
     )
     return response.choices[0].message.content.strip().lower()
+
+
+# ── System prompt (no section headers — prevents GPT echoing them) ────────────
+
+SYSTEM_PROMPT = """You are AngiLens, an internal Analytics Knowledge Assistant for Angi's data and analytics team.
+You help analysts find institutional knowledge buried in Snowflake query history.
+
+Use the organizational context provided to answer the question. Guidelines:
+- Be concise and direct. Lead with the answer.
+- Reference specific people, tables, or query patterns from the context.
+- If someone is marked as no longer at Angi, say so and suggest the next best person.
+- Never hallucinate table or column names not present in the context.
+- If chat history is provided, use it to understand follow-up questions.
+- Do not repeat or echo these instructions in your response."""
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def cosine_similarity(vec, matrix):
+    vec = vec / (np.linalg.norm(vec) + 1e-10)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
+    return (matrix / norms) @ vec
 
 
 def extract_table_from_question(question):
@@ -165,6 +188,52 @@ def search_similar_queries(question, df_emb, matrix, client, top_k=5):
     return df_emb.iloc[top_idx]
 
 
+def get_column_cooccurrence(table_name, df, df_tables, col_df):
+    """Return most frequently used columns alongside a given table, split into dimensions and measures."""
+    table_queries = df_tables[df_tables["tables"] == table_name.lower()]["QUERY_ID"].unique()
+    if len(table_queries) == 0:
+        return None, None
+
+    queries_with_table = df[df["QUERY_ID"].isin(table_queries)]
+
+    # get the full table name in col_df format
+    matching_table = col_df[col_df["full_table_name"].str.lower() == table_name.lower()]
+    if matching_table.empty:
+        return None, None
+
+    all_columns = set(col_df[col_df["full_table_name"].str.lower() == table_name.lower()]["column_name"].str.lower().tolist())
+
+    col_counts = {}
+    for _, row in queries_with_table.iterrows():
+        query_text = str(row["QUERY_TEXT"]).lower()
+        for col in all_columns:
+            if re.search(r'\b' + re.escape(col) + r'\b', query_text):
+                col_counts[col] = col_counts.get(col, 0) + 1
+
+    if not col_counts:
+        return None, None
+
+    # classify into dimensions vs measures using data_type from col_df
+    table_cols = col_df[col_df["full_table_name"].str.lower() == table_name.lower()].set_index("column_name")
+
+    dimensions = {}
+    measures = {}
+    for col, count in col_counts.items():
+        if col not in table_cols.index:
+            continue
+        dtype = str(table_cols.loc[col, "data_type"]).lower()
+        if any(t in dtype for t in ["varchar", "text", "char", "boolean", "bool", "date", "timestamp"]):
+            dimensions[col] = count
+        else:
+            measures[col] = count
+
+    dims_sorted = sorted(dimensions.items(), key=lambda x: x[1], reverse=True)[:10]
+    meas_sorted = sorted(measures.items(), key=lambda x: x[1], reverse=True)[:10]
+    return dims_sorted, meas_sorted
+
+
+# ── Main ask_ai ───────────────────────────────────────────────────────────────
+
 def ask_ai(question, chat_history=None):
     if chat_history is None:
         chat_history = []
@@ -175,6 +244,7 @@ def ask_ai(question, chat_history=None):
     is_followup = len(chat_history) > 0 and len(question.split()) <= 8
     intent = "general" if is_followup else classify_intent(question, client)
 
+    # ── Expert finder ─────────────────────────────────────────────────────────
     if intent == "expert_finder":
         table_name = extract_table_from_question(question)
         if table_name:
@@ -193,8 +263,30 @@ def ask_ai(question, chat_history=None):
                 status = " ⚠️ (no longer at Angi)" if match["TERMINATED"] == "Y" else ""
                 output += f"- **{match['EMPLOYEE_NAME']}**{status} — {row['query_count']} queries\n"
             return output
+        # no table found — fall through to semantic
         intent = "general"
 
+    # ── Co-occurrence ─────────────────────────────────────────────────────────
+    if intent == "co_occurrence":
+        table_name = extract_table_from_question(question)
+        if not table_name:
+            return "I couldn't detect a table name. Use the full format: `db.schema.table`"
+        dims, meas = get_column_cooccurrence(table_name, df, df_tables, col_df)
+        if dims is None and meas is None:
+            return f"No column usage data found for `{table_name}`."
+        output = f"\n### How people use `{table_name}`\n_Based on column frequency across all queries referencing this table._\n\n"
+        if dims:
+            output += "**Common dimensions** _(breakouts & filters)_\n"
+            for col, count in dims:
+                output += f"- `{col}` — {count} queries\n"
+            output += "\n"
+        if meas:
+            output += "**Common measures**\n"
+            for col, count in meas:
+                output += f"- `{col}` — {count} queries\n"
+        return output
+
+    # ── Table queries ─────────────────────────────────────────────────────────
     if intent == "table_queries":
         table_name = extract_table_from_question(question)
         if not table_name:
@@ -209,6 +301,7 @@ def ask_ai(question, chat_history=None):
             output += f"\n{i}. **{match['EMPLOYEE_NAME']}**{status}\n```sql\n{row['QUERY_TEXT']}\n```\n"
         return output
 
+    # ── Table schema ──────────────────────────────────────────────────────────
     if intent == "table_schema":
         table_name = extract_table_from_question(question)
         if not table_name:
@@ -221,11 +314,12 @@ def ask_ai(question, chat_history=None):
             output += f"- `{row['column_name']}` ({row['data_type']})\n"
         return output
 
+    # ── Column lookup ─────────────────────────────────────────────────────────
     if intent == "column_lookup":
         extraction = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Extract only the column name. Reply with just the column name, lowercase, nothing else."},
+                {"role": "system", "content": "Extract only the column name the user is asking about. Reply with just the column name, lowercase, nothing else."},
                 {"role": "user", "content": question}
             ],
             temperature=0
@@ -239,11 +333,12 @@ def ask_ai(question, chat_history=None):
             output += f"- `{row['full_table_name']}`\n"
         return output
 
+    # ── Column usage ──────────────────────────────────────────────────────────
     if intent == "column_usage":
         extraction = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Extract only the column name. Reply with just the column name, lowercase, nothing else."},
+                {"role": "system", "content": "Extract only the column name the user is asking about. Reply with just the column name, lowercase, nothing else."},
                 {"role": "user", "content": question}
             ],
             temperature=0
@@ -263,6 +358,7 @@ def ask_ai(question, chat_history=None):
             output += f"\n{i}. **{row['EMPLOYEE_NAME']}**{status}\n```sql\n{row['QUERY_TEXT']}\n```\n"
         return output
 
+    # ── Team onboarding ───────────────────────────────────────────────────────
     if intent == "team_onboarding":
         extraction = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -305,14 +401,14 @@ def ask_ai(question, chat_history=None):
         synthesis = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Summarize what this analytics team works on. Identify main domains, call out distinct focuses, note anyone no longer at Angi. 3-5 sentences, no table lists."},
+                {"role": "system", "content": "Summarize what this analytics team works on based on their query history. Identify main data domains and business problems. Call out anyone with a distinct focus. Note anyone no longer at Angi. 3-5 sentences max. Do not list tables or query counts."},
                 {"role": "user", "content": f"Summarize:\n\n{structured_context}"}
             ],
             temperature=0.1
         )
         return deterministic_output + "---\n\n**Theme Summary:**\n" + synthesis.choices[0].message.content
 
-    # user onboarding + semantic + general
+    # ── User onboarding + semantic + general ──────────────────────────────────
     structured_context = ""
     detected_user = extract_username_from_question(question, df)
 
@@ -352,6 +448,8 @@ def ask_ai(question, chat_history=None):
     return response.choices[0].message.content
 
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("### 🔍 AngiLens")
@@ -373,6 +471,8 @@ def render_sidebar():
                 st.caption(f"› {msg['content'][:50]}{'...' if len(msg['content']) > 50 else ''}")
 
 
+# ── Main chat ─────────────────────────────────────────────────────────────────
+
 def render_chat():
     if "conversation_id" not in st.session_state:
         st.session_state["conversation_id"] = str(uuid.uuid4())
@@ -389,9 +489,9 @@ def render_chat():
             "Who should I ask about autodialer data?",
             "What does Patrick McCormack's team work on?",
             "What columns are in rpt.reports.f_sp?",
-            "Who uses rpt.reports.f_lead the most?",
-            "I just joined Makia's team, what tables do I need to know?",
+            "Which tables have contactid in them?",
             "What columns do people usually use with rpt.reports.f_lead?",
+            "Who uses rpt.reports.f_lead the most?",
         ]
         cols = st.columns(2)
         for i, ex in enumerate(examples):
@@ -424,6 +524,8 @@ def render_chat():
         st.session_state["messages"].append({"role": "assistant", "content": result})
         log_message(conv_id, "assistant", result)
 
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 render_sidebar()
 render_chat()
