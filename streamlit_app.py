@@ -18,9 +18,25 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  section[data-testid="stSidebar"] { background: #1a1a2e; }
-  section[data-testid="stSidebar"] * { color: #e0e0e0 !important; }
-  .main .block-container { padding-top: 1rem; max-width: 860px; }
+  /* Main background — light mint */
+  .stApp { background-color: #D8F5E8; }
+  .main .block-container { background-color: #D8F5E8; padding-top: 1rem; max-width: 860px; }
+
+  /* Sidebar — coral */
+  section[data-testid="stSidebar"] { background-color: #F26552 !important; }
+  section[data-testid="stSidebar"] * { color: #ffffff !important; }
+  section[data-testid="stSidebar"] .stButton > button {
+    background-color: rgba(255,255,255,0.2) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.4) !important;
+  }
+  section[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: rgba(255,255,255,0.35) !important;
+  }
+
+  /* Chat messages on mint bg */
+  .stChatMessage { background-color: #ffffff; border-radius: 8px; }
+
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
 </style>
@@ -525,6 +541,8 @@ def ask_ai(question, chat_history=None):
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def render_email_gate():
+    allowed = [e.strip().lower() for e in st.secrets.get("ALLOWED_EMAILS", "").split(",") if e.strip()]
+
     st.markdown("<h2 style='text-align: center;'>AngiLens</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Search how we query. Know how we think.</p>", unsafe_allow_html=True)
     st.divider()
@@ -536,6 +554,8 @@ def render_email_gate():
             email = email_input.strip().lower()
             if "@angi.com" not in email:
                 st.error("Please use your @angi.com email address.")
+            elif allowed and email not in allowed:
+                st.error("This user is not authorized, please reach out to Zakir.")
             else:
                 st.session_state["user_email"] = email
                 st.rerun()
