@@ -85,7 +85,7 @@ def delete_conversation(conversation_id, user_email):
             writer.writerows(rows)
 
 
-
+def load_conversation_messages(conversation_id):
     if not Path(CHAT_LOG_PATH).exists():
         return []
     messages = []
