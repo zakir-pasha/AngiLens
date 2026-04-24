@@ -563,7 +563,9 @@ def render_chat():
     st.markdown("<h2 style='text-align: center;'>AngiLens</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Search how we query. Know how we think.</p>", unsafe_allow_html=True)
 
-    if not st.session_state["messages"]:
+    has_messages = len(st.session_state["messages"]) > 0
+
+    if not has_messages and "_prefill" not in st.session_state:
         st.divider()
         st.markdown("**Try asking:**")
         examples = [
