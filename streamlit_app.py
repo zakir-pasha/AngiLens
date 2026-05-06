@@ -46,7 +46,7 @@ def save_conversation_meta(conversation_id, title, user_email):
             "conversation_id": conversation_id,
             "user_email": user_email,
             "title": title,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(datetime.UTC).isoformat()
         })
     with open(CHAT_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["conversation_id", "user_email", "title", "created_at"])
@@ -139,7 +139,7 @@ def log_message(session_id, user_email, role, content):
         if not file_exists:
             writer.writerow(["timestamp", "session_id", "user_email", "role", "content"])
         writer.writerow([
-            datetime.utcnow().isoformat(),
+            datetime.now(datetime.UTC).isoformat(),
             session_id,
             user_email,
             role,
@@ -563,7 +563,7 @@ def render_email_gate():
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
         st.markdown("**Enter your Angi email to continue**")
-        email_input = st.text_input("", placeholder="firstname.lastname@angi.com", label_visibility="collapsed")
+        email_input = st.text_input("Email", placeholder="firstname.lastname@angi.com", label_visibility="collapsed")
         if st.button("Continue", use_container_width=True, type="primary"):
             email = email_input.strip().lower()
             if "@angi.com" not in email:
