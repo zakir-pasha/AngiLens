@@ -6,7 +6,7 @@ import pickle
 import csv
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import OpenAI
 
 st.set_page_config(
@@ -46,7 +46,7 @@ def save_conversation_meta(conversation_id, title, user_email):
             "conversation_id": conversation_id,
             "user_email": user_email,
             "title": title,
-            "created_at": datetime.now(datetime.UTC).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         })
     with open(CHAT_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["conversation_id", "user_email", "title", "created_at"])
@@ -139,7 +139,7 @@ def log_message(session_id, user_email, role, content):
         if not file_exists:
             writer.writerow(["timestamp", "session_id", "user_email", "role", "content"])
         writer.writerow([
-            datetime.now(datetime.UTC).isoformat(),
+            datetime.now(timezone.utc).isoformat(),
             session_id,
             user_email,
             role,
